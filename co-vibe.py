@@ -777,6 +777,8 @@ class Config:
 
     def _load_dotenv(self):
         """Load .env file from co-vibe install directory."""
+        if os.environ.get("CO_VIBE_NO_DOTENV") == "1":
+            return
         # Check multiple possible .env locations
         candidates = [
             os.path.join(os.path.expanduser("~"), ".local", "lib", "co-vibe", ".env"),

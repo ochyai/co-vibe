@@ -39,6 +39,7 @@ def _launch_co_vibe(extra_args=None, env_override=None, timeout=10):
     env["TERM"] = "dumb"
     env["VIBE_NO_SCROLL"] = "1"
     env["CO_VIBE_NO_OLLAMA"] = "1"  # Disable Ollama auto-detect in tests
+    env["CO_VIBE_NO_DOTENV"] = "1"  # Skip .env loading (avoid picking up real keys)
     if env_override:
         env.update(env_override)
 
@@ -321,14 +322,22 @@ class TestClientNoKeys:
         import importlib
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
         co_vibe = importlib.import_module("co-vibe")
-        cfg = co_vibe.Config()
-        cfg.anthropic_api_key = ""
-        cfg.openai_api_key = ""
-        cfg.groq_api_key = ""
-        client = co_vibe.MultiProviderClient(cfg)
-        ok, models = client.check_connection()
-        assert ok is False
-        assert models == []
+        # Temporarily remove real API keys from environment
+        _saved = {}
+        for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GROQ_API_KEY"):
+            if k in os.environ:
+                _saved[k] = os.environ.pop(k)
+        try:
+            cfg = co_vibe.Config()
+            cfg.anthropic_api_key = ""
+            cfg.openai_api_key = ""
+            cfg.groq_api_key = ""
+            client = co_vibe.MultiProviderClient(cfg)
+            ok, models = client.check_connection()
+            assert ok is False
+            assert models == []
+        finally:
+            os.environ.update(_saved)
 
 
 # ── 11. ToolRegistry ─────────────────────────────────────────────────────────
