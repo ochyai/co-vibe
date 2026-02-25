@@ -511,7 +511,7 @@ class TestCompactIfNeededDetailed(unittest.TestCase):
         cfg = _make_session_config(context_window=1000, sidecar_model="mock-model")
         s = Session(cfg, "prompt")
         mock_client = MagicMock()
-        mock_client.chat.side_effect = Exception("sidecar down")
+        mock_client.chat.side_effect = OSError("sidecar down")
         s.set_client(mock_client)
         for i in range(200):
             s.add_user_message("x" * 100)
@@ -1458,7 +1458,7 @@ class TestSpeedImprovements(unittest.TestCase):
         # Read the source to verify the stagger constant
         import inspect
         source = inspect.getsource(co_vibe.MultiAgentCoordinator)
-        self.assertIn("idx * 0.3", source)
+        self.assertIn("AGENT_STAGGER_SECONDS", source)
         self.assertNotIn("idx * 1.0", source)
 
     def test_decomposer_uses_fast_model(self):

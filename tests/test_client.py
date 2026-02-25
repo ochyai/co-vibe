@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import unittest
+import urllib.error
 from unittest.mock import MagicMock, patch, PropertyMock
 
 # co-vibe uses a hyphen, so standard import won't work
@@ -170,7 +171,7 @@ class TestCheckConnection(unittest.TestCase):
     def test_with_keys_http_failure_still_returns_true(self):
         """Even if the health-check HTTP call fails, we still return True if keys exist."""
         client = _make_client(openai_api_key="sk-openai-TESTKEY123456")
-        with patch("urllib.request.urlopen", side_effect=Exception("network")):
+        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("network")):
             ok, models = client.check_connection(retries=1)
         self.assertTrue(ok)
         self.assertTrue(len(models) > 0)
@@ -178,7 +179,7 @@ class TestCheckConnection(unittest.TestCase):
     def test_check_connection_retries(self):
         """Should retry the specified number of times before giving up."""
         client = _make_client(anthropic_api_key="sk-ant-TESTKEY123456")
-        with patch("urllib.request.urlopen", side_effect=Exception("timeout")) as mock_url:
+        with patch("urllib.request.urlopen", side_effect=OSError("timeout")) as mock_url:
             with patch("time.sleep"):
                 client.check_connection(retries=3)
         self.assertEqual(mock_url.call_count, 3)
