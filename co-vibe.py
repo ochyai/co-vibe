@@ -6828,6 +6828,337 @@ class ProcessManagerTool(Tool):
 
 
 # ════════════════════════════════════════════════════════════════════════════════
+# Deep Research Tool
+# ════════════════════════════════════════════════════════════════════════════════
+
+class DeepResearchTool(Tool):
+    """Deep Research: multi-step web research with synthesis.
+
+    Decomposes a research question into sub-queries, searches the web in
+    parallel, reads relevant pages, and synthesizes a comprehensive report
+    with numbered citations.
+    """
+    name = "DeepResearch"
+    description = (
+        "Perform deep multi-step research on a topic. "
+        "Decomposes the query into sub-questions, searches the web in parallel, "
+        "reads relevant pages, and synthesizes a comprehensive report with citations. "
+        "Use for literature reviews, technology surveys, prior art searches, "
+        "and any research requiring multiple sources."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The research question or topic to investigate",
+            },
+            "depth": {
+                "type": "string",
+                "enum": ["quick", "standard", "thorough"],
+                "description": "Research depth: quick (3-5 sources), standard (8-12 sources), thorough (15-20 sources). Default: standard",
+            },
+            "focus": {
+                "type": "string",
+                "description": "Optional focus area to emphasize (e.g., 'recent papers', 'implementation details', 'comparison of approaches')",
+            },
+        },
+        "required": ["query"],
+    }
+
+    # Depth configs: (n_sub_queries, max_urls_to_fetch, max_content_per_page)
+    _DEPTH_CONFIG = {
+        "quick":    (3, 5, 1500),
+        "standard": (5, 12, 2000),
+        "thorough": (8, 20, 2500),
+    }
+
+    # Max total chars sent to synthesis LLM to avoid context overflow
+    _MAX_SYNTHESIS_INPUT = 50000
+
+    def __init__(self, config, client):
+        self._config = config
+        self._client = client
+
+    def _resolve_model(self, tier):
+        """Resolve a tier name to a model string."""
+        if tier and hasattr(self._config, f"model_{tier}"):
+            model = getattr(self._config, f"model_{tier}", "")
+            if model:
+                return model
+        return self._config.sidecar_model or self._config.model
+
+    def _progress(self, msg):
+        """Print a progress message (thread-safe)."""
+        with _print_lock:
+            _scroll_aware_print(f"  {_ansi(chr(27)+'[38;5;45m')}{msg}{C.RESET}", flush=True)
+
+    # -- Step 1: Query Decomposition ------------------------------------------
+
+    def _decompose_query(self, query, n_queries, focus):
+        """Use a fast LLM to decompose the research question into sub-queries."""
+        focus_line = f"\nFocus area: {focus}" if focus else ""
+        decompose_prompt = (
+            f"Break this research question into {n_queries} specific web search queries "
+            f"that together will cover the topic comprehensively. "
+            f"Return ONLY a JSON array of search query strings, nothing else.\n\n"
+            f"Research question: {query}{focus_line}\n\n"
+            f'Example output: ["query 1", "query 2", "query 3"]'
+        )
+        model = self._resolve_model("fast")
+        try:
+            resp = self._client.chat_sync(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "You are a research planner. Output only valid JSON."},
+                    {"role": "user", "content": decompose_prompt},
+                ],
+            )
+            text = resp.get("content", "").strip()
+            # Extract JSON array from response (handle markdown code blocks)
+            json_match = re.search(r'\[.*\]', text, re.DOTALL)
+            if json_match:
+                queries = json.loads(json_match.group())
+                if isinstance(queries, list) and all(isinstance(q, str) for q in queries):
+                    return queries[:n_queries]
+        except (json.JSONDecodeError, Exception) as e:
+            if self._config.debug:
+                with _print_lock:
+                    print(f"[debug] DeepResearch decompose error: {e}", file=sys.stderr)
+        # Fallback: use the original query plus simple variations
+        fallback = [query]
+        if focus:
+            fallback.append(f"{query} {focus}")
+        fallback.append(f"{query} overview")
+        return fallback[:n_queries]
+
+    # -- Step 2: Parallel Web Search ------------------------------------------
+
+    def _search_one(self, sub_query):
+        """Execute a single DuckDuckGo search and return list of {title, url, snippet}."""
+        # Reuse WebSearchTool rate limiting via its class-level lock
+        with WebSearchTool._search_lock:
+            now = time.time()
+            if WebSearchTool._search_count >= WebSearchTool._MAX_SEARCHES_PER_SESSION:
+                return []
+            elapsed = now - WebSearchTool._last_search_time
+            if elapsed < WebSearchTool._MIN_INTERVAL:
+                time.sleep(WebSearchTool._MIN_INTERVAL - elapsed)
+            WebSearchTool._last_search_time = time.time()
+            WebSearchTool._search_count += 1
+
+        # Perform the actual search (reuse WebSearchTool parsing)
+        searcher = WebSearchTool()
+        raw = searcher._ddg_search(sub_query, max_results=8)
+
+        # Parse structured results from the text output
+        results = []
+        if raw and not raw.startswith("Web search failed") and not raw.startswith("Web search blocked"):
+            for block in re.split(r'\n(?=\d+\.\s)', raw):
+                m = re.match(r'\d+\.\s+(.+?)\n\s+(https?://\S+)', block, re.DOTALL)
+                if m:
+                    title = m.group(1).strip()
+                    url = m.group(2).strip()
+                    snippet = ""
+                    snip_m = re.search(r'https?://\S+\n\s+(.+)', block, re.DOTALL)
+                    if snip_m:
+                        snippet = snip_m.group(1).strip()
+                    results.append({"title": title, "url": url, "snippet": snippet})
+        return results
+
+    def _search_all(self, sub_queries):
+        """Run all sub-query searches sequentially (DuckDuckGo rate limits require it).
+
+        Returns deduplicated list of {title, url, snippet, query}.
+        """
+        all_results = []
+        seen_urls = set()
+        completed = 0
+
+        for sq in sub_queries:
+            try:
+                hits = self._search_one(sq)
+                for h in hits:
+                    url = h["url"]
+                    if url not in seen_urls:
+                        seen_urls.add(url)
+                        h["query"] = sq
+                        all_results.append(h)
+            except Exception as e:
+                if self._config.debug:
+                    with _print_lock:
+                        print(f"[debug] DeepResearch search error for '{sq}': {e}", file=sys.stderr)
+            completed += 1
+            self._progress(f"  \U0001f50d Searching... ({completed}/{len(sub_queries)} queries)")
+
+        return all_results
+
+    # -- Step 3: Parallel Page Fetching ---------------------------------------
+
+    def _fetch_one(self, url, max_chars):
+        """Fetch a single URL and return extracted text (capped to max_chars)."""
+        fetcher = WebFetchTool()
+        try:
+            text = fetcher.execute({"url": url})
+            if text and not text.startswith("Error") and not text.startswith("HTTP Error"):
+                if len(text) > max_chars:
+                    text = text[:max_chars] + "..."
+                return text
+        except Exception:
+            pass
+        return ""
+
+    def _fetch_all(self, results, max_urls, max_chars_per_page):
+        """Fetch top URLs in parallel. Returns list of {url, title, snippet, content}."""
+        to_fetch = results[:max_urls]
+        fetched = []
+
+        self._progress(f"  \U0001f4d6 Reading {len(to_fetch)} sources...")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+            future_map = {
+                pool.submit(self._fetch_one, r["url"], max_chars_per_page): r
+                for r in to_fetch
+            }
+            for future in concurrent.futures.as_completed(future_map):
+                r = future_map[future]
+                try:
+                    content = future.result()
+                except Exception:
+                    content = ""
+                fetched.append({
+                    "url": r["url"],
+                    "title": r["title"],
+                    "snippet": r.get("snippet", ""),
+                    "content": content,
+                })
+
+        return fetched
+
+    # -- Step 4: Synthesis ----------------------------------------------------
+
+    def _synthesize(self, query, focus, sources):
+        """Send gathered content to a strong LLM for synthesis."""
+        formatted_parts = []
+        total_chars = 0
+        for i, src in enumerate(sources, 1):
+            content = src.get("content", "").strip()
+            snippet = src.get("snippet", "").strip()
+            body = content if content else snippet
+            if not body:
+                body = "(page could not be fetched)"
+            entry = f"[{i}] Title: {src['title']}\n    URL: {src['url']}\n    Content: {body}\n"
+            if total_chars + len(entry) > self._MAX_SYNTHESIS_INPUT:
+                remaining = self._MAX_SYNTHESIS_INPUT - total_chars
+                if remaining > 200:
+                    entry = entry[:remaining] + "\n    ...(truncated)\n"
+                    formatted_parts.append(entry)
+                break
+            total_chars += len(entry)
+            formatted_parts.append(entry)
+
+        formatted_sources = "\n".join(formatted_parts)
+        n_sources = len(formatted_parts)
+        focus_line = f"\nFocus: {focus}" if focus else ""
+
+        synthesis_prompt = (
+            f"You are a research assistant synthesizing findings from multiple sources.\n\n"
+            f"Research question: {query}{focus_line}\n\n"
+            f"Sources:\n{formatted_sources}\n\n"
+            f"Write a comprehensive research report with:\n"
+            f"1. **Executive Summary** (2-3 sentences)\n"
+            f"2. **Key Findings** (organized by theme, with source citations [1], [2], etc.)\n"
+            f"3. **Detailed Analysis** (in-depth discussion citing sources)\n"
+            f"4. **Gaps and Open Questions** (what remains unclear or needs further research)\n"
+            f"5. **References** (numbered list of all sources with titles and URLs)\n\n"
+            f"Be thorough and cite sources by number [1], [2], etc. throughout the report."
+        )
+
+        model = self._resolve_model("strong")
+        self._progress("  \U0001f9ea Synthesizing findings...")
+
+        try:
+            resp = self._client.chat_sync(
+                model=model,
+                messages=[
+                    {"role": "system", "content": (
+                        "You are an expert research analyst. Write clear, well-structured "
+                        "research reports with proper citations. Be comprehensive but concise."
+                    )},
+                    {"role": "user", "content": synthesis_prompt},
+                ],
+            )
+            report = resp.get("content", "").strip()
+            if report:
+                return report, n_sources
+        except Exception as e:
+            if self._config.debug:
+                with _print_lock:
+                    print(f"[debug] DeepResearch synthesis error: {e}", file=sys.stderr)
+
+        # Fallback: return raw findings if synthesis fails
+        fallback = f"# Research Results for: {query}\n\n"
+        fallback += "(Synthesis failed -- raw results below)\n\n"
+        for i, src in enumerate(sources, 1):
+            fallback += f"[{i}] {src['title']}\n    {src['url']}\n"
+            if src.get("snippet"):
+                fallback += f"    {src['snippet']}\n"
+            fallback += "\n"
+        return fallback, n_sources
+
+    # -- Main execute ---------------------------------------------------------
+
+    def execute(self, params):
+        query = params.get("query", "")
+        if not query:
+            return "Error: query is required"
+
+        depth = params.get("depth", "standard")
+        focus = params.get("focus", "")
+
+        if depth not in self._DEPTH_CONFIG:
+            depth = "standard"
+
+        n_queries, max_urls, max_chars = self._DEPTH_CONFIG[depth]
+        _start = time.time()
+
+        self._progress(f"\n\U0001f52c Deep Research: \"{query}\" (depth={depth})")
+
+        # Step 1: Decompose query
+        self._progress("  \U0001f4cb Decomposing research question...")
+        sub_queries = self._decompose_query(query, n_queries, focus)
+        self._progress(f"  \U0001f4cb Decomposed into {len(sub_queries)} sub-queries")
+        if self._config.debug:
+            for i, sq in enumerate(sub_queries, 1):
+                with _print_lock:
+                    print(f"[debug]   query {i}: {sq}", file=sys.stderr)
+
+        # Step 2: Search (sequential due to DDG rate limits)
+        search_results = self._search_all(sub_queries)
+        if not search_results:
+            return (
+                f"Deep Research found no results for: {query}\n"
+                f"Try rephrasing the query or using WebSearch directly."
+            )
+        self._progress(f"  \U0001f50d Found {len(search_results)} unique results")
+
+        # Step 3: Fetch pages in parallel
+        fetched = self._fetch_all(search_results, max_urls, max_chars)
+        n_fetched = sum(1 for f in fetched if f.get("content"))
+        self._progress(f"  \U0001f4d6 Successfully read {n_fetched}/{len(fetched)} pages")
+
+        # Step 4: Synthesize
+        report, n_cited = self._synthesize(query, focus, fetched)
+
+        elapsed = time.time() - _start
+        self._progress(
+            f"  \u2705 Research complete ({n_cited} sources, {elapsed:.1f}s)"
+        )
+
+        return report
+
+
+# ════════════════════════════════════════════════════════════════════════════════
 # Tool Registry
 # ════════════════════════════════════════════════════════════════════════════════
 
@@ -6875,7 +7206,7 @@ class PermissionMgr:
     SAFE_TOOLS = {"Read", "Glob", "Grep", "SubAgent", "AskUserQuestion",
                    "TaskCreate", "TaskList", "TaskGet", "TaskUpdate", "Screenshot"}
     ASK_TOOLS = {"Bash", "Write", "Edit", "NotebookEdit", "Clipboard", "ProcessManager", "Database"}
-    NETWORK_TOOLS = {"WebFetch", "WebSearch"}
+    NETWORK_TOOLS = {"WebFetch", "WebSearch", "DeepResearch"}
 
     def __init__(self, config):
         self.yes_mode = config.yes_mode
@@ -7949,6 +8280,7 @@ class TUI:
         in_think = False
         think_buf = ""    # buffer to detect <think> / </think> split across chunks
         header_printed = False
+        _think_header_printed = False  # track whether we printed the dimmed-thinking header
         # Line-buffered markdown rendering state
         _md_line_buf = ""
         _md_state = {"in_code_block": False, "in_table": False}
@@ -7995,7 +8327,8 @@ class TUI:
                 return
             _elapsed = _now - _stream_start
             _tok_display = f"{_approx_tokens / 1000:.1f}k" if _approx_tokens >= 1000 else str(_approx_tokens)
-            _status_msg = f"\U0001f4ad Thinking... ({_elapsed:.0f}s \u00b7 \u2193 {_tok_display} tokens)"
+            _esc_note = " \u2014 ESC: stop" if HAS_TERMIOS else ""
+            _status_msg = f"\U0001f4ad Thinking... ({_elapsed:.0f}s \u00b7 \u2193 {_tok_display} tokens){_esc_note}"
             _clear_w = max(len(_status_msg) + 6, 60)
             _lock = _sr._lock if _sr._active else _print_lock
             with _lock:
@@ -8066,16 +8399,44 @@ class TUI:
                             _stream_md_print(to_print)
                         think_buf = think_buf[idx + 7:]  # skip past <think>
                         in_think = True
+                        _think_header_printed = False
                 else:
                     idx = think_buf.find("</think>")
                     if idx == -1:
-                        # Still inside think block — discard but keep buffer for partial tag
+                        # Still inside think block — show dimmed instead of discarding
                         if len(think_buf) > 8:
+                            _think_text = think_buf[:-8]
                             think_buf = think_buf[-8:]
+                        else:
+                            _think_text = ""
+                        if _think_text.strip():
+                            _clear_thinking_status()
+                            if not _think_header_printed:
+                                self._scroll_print(
+                                    f"\n{C.DIM}\U0001f4ad ", end="", flush=True)
+                                _think_header_printed = True
+                            self._scroll_print(
+                                f"{C.DIM}{_think_text}{C.RESET}",
+                                end="", flush=True)
                         break
                     else:
+                        # Show remaining think content before closing tag
+                        _think_tail = think_buf[:idx]
+                        if _think_tail.strip():
+                            _clear_thinking_status()
+                            if not _think_header_printed:
+                                self._scroll_print(
+                                    f"\n{C.DIM}\U0001f4ad ", end="", flush=True)
+                                _think_header_printed = True
+                            self._scroll_print(
+                                f"{C.DIM}{_think_tail}{C.RESET}",
+                                end="", flush=True)
+                        if _think_header_printed:
+                            self._scroll_print(
+                                f"{C.RESET}", end="", flush=True)
                         think_buf = think_buf[idx + 8:]  # skip past </think>
                         in_think = False
+                        _think_header_printed = False
 
         # Clear status line before final output
         _clear_thinking_status()
@@ -8481,8 +8842,16 @@ class TUI:
         else:
             return False
 
-    def start_spinner(self, label="Thinking"):
-        """Show a neon spinner while waiting."""
+    def start_spinner(self, label="Thinking", show_elapsed=True):
+        """Show a neon spinner while waiting.
+
+        When *show_elapsed* is True (default), the spinner progressively shows
+        elapsed time so the user knows the model hasn't frozen:
+            0-3s:  "◜ Thinking..."
+            3-10s: "◜ Thinking... (5s)"
+            10-20s:"◜ Thinking... (15s) — model is processing"
+            20s+:  "◜ Thinking... (25s) — deep reasoning in progress"
+        """
         if not self.is_interactive:
             return
         # C4: Stop any existing spinner before starting new one
@@ -8493,16 +8862,27 @@ class TUI:
         frames = ["|", "/", "-", "\\"] if not C._enabled else ["◜", "◠", "◝", "◞", "◡", "◟"]
         colors = [_ansi("\033[38;5;51m"), _ansi("\033[38;5;87m"), _ansi("\033[38;5;123m"),
                   _ansi("\033[38;5;159m"), _ansi("\033[38;5;123m"), _ansi("\033[38;5;87m")]
-        clear_len = max(len(label) + 10, 60)  # enough to clear the spinner line
+        clear_len = max(len(label) + 50, 80)  # enough to clear the spinner line (wider for elapsed suffix)
 
         def spin():
             i = 0
+            _t0 = time.time()
             while not self._spinner_stop.is_set():
                 c = colors[i % len(colors)]
                 f = frames[i % len(frames)]
+                # Build elapsed-time suffix
+                suffix = ""
+                if show_elapsed:
+                    elapsed = time.time() - _t0
+                    if elapsed > 20:
+                        suffix = f" ({int(elapsed)}s) {C.DIM}\u2014 deep reasoning in progress{C.RESET}"
+                    elif elapsed > 10:
+                        suffix = f" ({int(elapsed)}s) {C.DIM}\u2014 model is processing{C.RESET}"
+                    elif elapsed > 3:
+                        suffix = f" ({int(elapsed)}s)"
                 _lock = _sr._lock if _sr._active else _print_lock
                 with _lock:
-                    print(f"\r  {c}{f} {label}...{C.RESET}", end="", flush=True)
+                    print(f"\r  {c}{f} {label}...{suffix}{C.RESET}", end="", flush=True)
                 i += 1
                 self._spinner_stop.wait(0.08)  # replaces time.sleep
             _lock = _sr._lock if _sr._active else _print_lock
@@ -9787,6 +10167,8 @@ def main():
     _sub_agent_tool = SubAgentTool(config, client, registry, permissions)
     _sub_agent_tool._persistent_memory = _persistent_mem
     registry.register(_sub_agent_tool)
+    _deep_research_tool = DeepResearchTool(config, client)
+    registry.register(_deep_research_tool)
     coordinator = MultiAgentCoordinator(config, client, registry, permissions,
                                         persistent_memory=_persistent_mem)
     registry.register(ParallelAgentTool(coordinator))
