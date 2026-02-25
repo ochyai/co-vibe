@@ -7006,8 +7006,10 @@ class DeepResearchTool(Tool):
                 if len(text) > max_chars:
                     text = text[:max_chars] + "..."
                 return text
-        except Exception:
-            pass
+        except Exception as exc:
+            if self._config.debug:
+                with _print_lock:
+                    print(f"[debug] DeepResearch: fetch failed for {url}: {exc}", file=sys.stderr)
         return ""
 
     def _fetch_all(self, results, max_urls, max_chars_per_page):
@@ -7026,7 +7028,10 @@ class DeepResearchTool(Tool):
                 r = future_map[future]
                 try:
                     content = future.result()
-                except Exception:
+                except Exception as exc:
+                    if self._config.debug:
+                        with _print_lock:
+                            print(f"[debug] DeepResearch: future error for {r['url']}: {exc}", file=sys.stderr)
                     content = ""
                 fetched.append({
                     "url": r["url"],
@@ -8442,6 +8447,10 @@ class TUI:
 
         # Clear status line before final output
         _clear_thinking_status()
+
+        # Close DIM styling if stream ended inside a think block (truncation safety)
+        if in_think and _think_header_printed:
+            self._scroll_print(f"{C.RESET}\n", end="", flush=True)
 
         # Flush remaining buffer through markdown renderer
         if think_buf and not in_think:

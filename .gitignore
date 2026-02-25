@@ -15,6 +15,8 @@ venv/
 
 # co-vibe specific
 .co-vibe-context.json
+.co-vibe-memory.json
+.pytest_cache/
 
 # IDE
 .vscode/

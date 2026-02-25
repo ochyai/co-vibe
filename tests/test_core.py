@@ -1468,5 +1468,192 @@ class TestSpeedImprovements(unittest.TestCase):
         self.assertIn("model_fast", source)
 
 
+class TestStripThinkBlocks(unittest.TestCase):
+    """Tests for _strip_think_blocks helper."""
+
+    _strip = staticmethod(co_vibe._strip_think_blocks)
+
+    def test_removes_single_think_block(self):
+        self.assertEqual(self._strip("<think>reasoning</think>Hello"), "Hello")
+
+    def test_removes_multiple_think_blocks(self):
+        text = "<think>a</think>Hi<think>b</think> there"
+        self.assertEqual(self._strip(text), "Hi there")
+
+    def test_multiline_think_block(self):
+        text = "<think>\nline1\nline2\n</think>Result"
+        self.assertEqual(self._strip(text), "Result")
+
+    def test_no_think_blocks(self):
+        self.assertEqual(self._strip("Just plain text"), "Just plain text")
+
+    def test_empty_think_block(self):
+        self.assertEqual(self._strip("<think></think>Result"), "Result")
+
+    def test_nested_angle_brackets_inside(self):
+        text = "<think>some <inner> tag</think>OK"
+        self.assertEqual(self._strip(text), "OK")
+
+
+class TestParseToolArguments(unittest.TestCase):
+    """Tests for MultiProviderClient._parse_tool_arguments."""
+
+    def setUp(self):
+        cfg = Config()
+        cfg.anthropic_api_key = "test-key"
+        self.client = MultiProviderClient(cfg)
+
+    def test_valid_json_string(self):
+        result = self.client._parse_tool_arguments('{"key": "value"}')
+        self.assertEqual(result, {"key": "value"})
+
+    def test_dict_passthrough(self):
+        d = {"a": 1}
+        result = self.client._parse_tool_arguments(d)
+        self.assertEqual(result, {"a": 1})
+
+    def test_empty_string_returns_raw(self):
+        result = self.client._parse_tool_arguments("")
+        self.assertEqual(result, {"raw": ""})
+
+    def test_invalid_json_returns_raw(self):
+        result = self.client._parse_tool_arguments("{broken json")
+        self.assertIn("raw", result)
+
+    def test_truncates_oversized_args(self):
+        huge = '{"x": "' + "A" * (co_vibe.MAX_TOOL_ARG_BYTES + 100) + '"}'
+        result = self.client._parse_tool_arguments(huge)
+        # Should not raise; either parsed truncated or returned raw
+        self.assertIsInstance(result, dict)
+
+
+class TestDeepResearchTool(unittest.TestCase):
+    """Tests for DeepResearchTool (all network calls mocked)."""
+
+    def _make_tool(self, debug=False):
+        cfg = Config()
+        cfg.anthropic_api_key = "test-key"
+        cfg.debug = debug
+        cfg.model = "test-model"
+        cfg.sidecar_model = ""
+        client = MagicMock()
+        return co_vibe.DeepResearchTool(cfg, client), client
+
+    def test_empty_query_returns_error(self):
+        tool, _ = self._make_tool()
+        result = tool.execute({"query": ""})
+        self.assertIn("Error", result)
+
+    def test_invalid_depth_falls_back_to_standard(self):
+        tool, client = self._make_tool()
+        # Mock chat_sync to return valid decomposition
+        client.chat_sync.return_value = {"content": '["q1", "q2", "q3"]'}
+        # Mock _search_all to return empty → early exit
+        with patch.object(tool, '_search_all', return_value=[]):
+            result = tool.execute({"query": "test", "depth": "invalid"})
+        self.assertIn("no results", result)
+
+    def test_depth_config_values(self):
+        tool, _ = self._make_tool()
+        self.assertIn("quick", tool._DEPTH_CONFIG)
+        self.assertIn("standard", tool._DEPTH_CONFIG)
+        self.assertIn("thorough", tool._DEPTH_CONFIG)
+        # quick should have fewer sub-queries than thorough
+        self.assertLess(tool._DEPTH_CONFIG["quick"][0], tool._DEPTH_CONFIG["thorough"][0])
+
+    def test_decompose_query_fallback_on_error(self):
+        tool, client = self._make_tool()
+        client.chat_sync.side_effect = Exception("API error")
+        result = tool._decompose_query("test query", 3, "")
+        # Should return fallback queries
+        self.assertIsInstance(result, list)
+        self.assertGreater(len(result), 0)
+        self.assertIn("test query", result)
+
+    def test_decompose_query_with_focus_fallback(self):
+        tool, client = self._make_tool()
+        client.chat_sync.side_effect = Exception("API error")
+        result = tool._decompose_query("test", 3, "recent papers")
+        self.assertTrue(any("recent papers" in q for q in result))
+
+    def test_decompose_query_parses_json_array(self):
+        tool, client = self._make_tool()
+        client.chat_sync.return_value = {"content": '["alpha search", "beta search"]'}
+        result = tool._decompose_query("topic", 5, "")
+        self.assertEqual(result, ["alpha search", "beta search"])
+
+    def test_decompose_query_handles_markdown_code_block(self):
+        tool, client = self._make_tool()
+        client.chat_sync.return_value = {"content": '```json\n["q1", "q2"]\n```'}
+        result = tool._decompose_query("topic", 5, "")
+        self.assertEqual(result, ["q1", "q2"])
+
+    def test_fetch_one_returns_empty_on_error(self):
+        tool, _ = self._make_tool()
+        with patch.object(co_vibe.WebFetchTool, 'execute', side_effect=Exception("network")):
+            result = tool._fetch_one("https://example.com", 1000)
+        self.assertEqual(result, "")
+
+    def test_fetch_one_truncates_long_content(self):
+        tool, _ = self._make_tool()
+        long_text = "A" * 5000
+        with patch.object(co_vibe.WebFetchTool, 'execute', return_value=long_text):
+            result = tool._fetch_one("https://example.com", 100)
+        self.assertEqual(len(result), 103)  # 100 + "..."
+        self.assertTrue(result.endswith("..."))
+
+    def test_fetch_one_rejects_error_response(self):
+        tool, _ = self._make_tool()
+        with patch.object(co_vibe.WebFetchTool, 'execute', return_value="Error: 404"):
+            result = tool._fetch_one("https://example.com", 1000)
+        self.assertEqual(result, "")
+
+    def test_synthesize_fallback_on_error(self):
+        tool, client = self._make_tool()
+        client.chat_sync.side_effect = Exception("API down")
+        sources = [{"title": "T1", "url": "http://a.com", "snippet": "snip", "content": "body"}]
+        report, n = tool._synthesize("query", "", sources)
+        self.assertIn("raw results", report)
+        self.assertEqual(n, 1)
+
+    def test_synthesize_respects_max_input(self):
+        tool, client = self._make_tool()
+        client.chat_sync.return_value = {"content": "Report text"}
+        # Create sources that exceed MAX_SYNTHESIS_INPUT
+        big_content = "X" * (tool._MAX_SYNTHESIS_INPUT + 1000)
+        sources = [{"title": "Big", "url": "http://big.com", "snippet": "", "content": big_content}]
+        report, n = tool._synthesize("query", "", sources)
+        self.assertEqual(report, "Report text")
+        self.assertEqual(n, 1)
+
+    def test_full_execute_mocked_pipeline(self):
+        """End-to-end test with all steps mocked."""
+        tool, client = self._make_tool()
+        # Step 1: decompose
+        client.chat_sync.side_effect = [
+            {"content": '["sub query 1"]'},                         # decompose
+            {"content": "## Final Report\nSynthesized findings."},  # synthesize
+        ]
+        # Step 2: search
+        with patch.object(tool, '_search_all', return_value=[
+            {"title": "Result 1", "url": "https://example.com/1", "snippet": "snip1"},
+        ]):
+            # Step 3: fetch
+            with patch.object(tool, '_fetch_one', return_value="Page content here"):
+                result = tool.execute({"query": "test topic", "depth": "quick"})
+        self.assertIn("Final Report", result)
+
+    def test_resolve_model_falls_back(self):
+        tool, _ = self._make_tool()
+        # No model_fast set → should fall back to config.model
+        result = tool._resolve_model("fast")
+        self.assertEqual(result, "test-model")
+
+    def test_progress_does_not_raise(self):
+        """_progress should not raise even with special characters."""
+        tool, _ = self._make_tool()
+        tool._progress("Test 日本語 🔍 special chars")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -13,15 +13,15 @@
 >
 > Pure Python. Zero dependencies. Feel AGI.
 
-**🇯🇵** Anthropic・OpenAI・Groq・Ollamaの4プロバイダを横断するマルチプロバイダAIコーディングエージェント。タスク複雑度に応じた3段オーケストレーション。Deep Research・マルチエージェント・セッション永続化。研究開発のための透明でデバッグ可能なターミナルエージェント。
+**日本語** Anthropic・OpenAI・Groq・Ollamaの4プロバイダを横断するマルチプロバイダAIコーディングエージェント。タスク複雑度に応じた3段オーケストレーション。Deep Research・マルチエージェント・セッション永続化。研究開発のための透明でデバッグ可能なターミナルエージェント。
 
-**🇺🇸** Multi-provider AI coding agent that routes across Anthropic, OpenAI, Groq, and Ollama with 3-tier smart orchestration. Deep Research, multi-agent parallel execution, session persistence. A transparent, debuggable terminal agent built for research and development.
+**English** Multi-provider AI coding agent that routes across Anthropic, OpenAI, Groq, and Ollama with 3-tier smart orchestration. Deep Research, multi-agent parallel execution, session persistence. A transparent, debuggable terminal agent built for research and development.
 
-**🇨🇳** 跨 Anthropic、OpenAI、Groq 和 Ollama 四个供应商的多供应商AI编程代理。具有三层智能编排、深度研究、多代理并行执行和会话持久化功能。为研究开发而构建的透明可调试终端代理。
+**中文** 跨 Anthropic、OpenAI、Groq 和 Ollama 四个供应商的多供应商AI编程代理。具有三层智能编排、深度研究、多代理并行执行和会话持久化功能。为研究开发而构建的透明可调试终端代理。
 
 ---
 
-## 🇯🇵 日本語 | [🇺🇸 English](#-english) | [🇨🇳 中文](#-中文)
+## 日本語 | [やさしい にほんご](#やさしい-にほんご) | [English](#english) | [中文](#中文)
 
 ### これは何？
 
@@ -151,7 +151,73 @@ CO_VIBE_DEBUG_TUI=1 python3 co-vibe.py  # TUIデバッグログを有効化
 
 ---
 
-## 🇺🇸 English
+## やさしい にほんご
+
+### これは なに？
+
+ターミナルで、AI（えーあい）に プログラムを かいて もらう どうぐ です。
+いろいろな AI（Anthropic、OpenAI、Groq、Ollama）を つかいわけて、
+いちばん いい AI を えらんで くれます。
+
+### いれかた（3つの ステップ）
+
+**1.** ターミナルを ひらく（`Cmd+Space` → 「ターミナル」で けんさく）
+
+**2.** したの もじを コピーして、はりつけて、Enterを おす：
+
+```bash
+git clone https://github.com/ochyai/co-vibe.git && cd co-vibe
+```
+
+**3.** セットアップを する：
+
+```bash
+python3 setup.py
+```
+
+おわったら、これで きどう：
+
+```bash
+python3 co-vibe.py
+```
+
+### つかいかた
+
+```bash
+# AIと はなしながら プログラムを つくる
+python3 co-vibe.py
+
+# 1かいだけ しつもんする
+python3 co-vibe.py -p "Pythonで じゃんけんゲームを つくって"
+
+# デバッグモード（くわしい じょうほうを みる）
+python3 co-vibe.py --debug
+```
+
+### きをつけること
+
+> **⚠️ だいじ：AIは まちがえることが あります！**
+
+AIが うごかそうとする コマンド（めいれい）を よく みてください。
+わからない コマンドは、**ぜったいに `y`（はい）を おさないで ください。**
+
+| きけんな キーワード | なぜ あぶない？ |
+|---|---|
+| `sudo` で はじまる | パソコンの だいじな せっていが かわる |
+| `rm -rf` | ファイルが ぜんぶ きえる（もどせない！） |
+| `chmod` が はいっている | ファイルの まもりが なくなる |
+| いみが わからない ながい コマンド | なにが おきるか わからない！ |
+
+**あんぜんに つかう ほうほう：**
+
+- はじめて つかうときは、`-y` を **つけないで** ください（あんぜんモード）
+- AIが コマンドを うつまえに、「これを うっていい？」と きいてきます
+- わからない コマンドは **ぜったいに ゆるさないで ください**
+- こまったら、`Ctrl+C`（コントロール と C を いっしょに おす）で とまります
+
+---
+
+## English
 
 ### What is this?
 
@@ -254,7 +320,7 @@ python3 co-vibe.py --resume
 
 ---
 
-## 🇨🇳 中文
+## 中文
 
 ### 这是什么？
 
@@ -380,7 +446,7 @@ Anthropic OpenAI  Groq     Ollama
 
 ## 🚨 Security / セキュリティ / 安全须知
 
-### 🇯🇵 日本語
+### 日本語
 
 > **⚠️ AIが実行するコマンドには注意が必要です。自己責任でご利用ください。**
 
@@ -410,7 +476,7 @@ python3 co-vibe.py          # 通常モード（推奨）：毎回確認あり
 python3 co-vibe.py -y       # 自動許可モード（上級者向け・自己責任）
 ```
 
-### 🇺🇸 English
+### English
 
 > **⚠️ Pay attention to the commands the AI executes. Use at your own risk.**
 
@@ -440,7 +506,7 @@ python3 co-vibe.py          # Normal mode (recommended)
 python3 co-vibe.py -y       # Auto-approve (advanced, at your own risk)
 ```
 
-### 🇨🇳 中文
+### 中文
 
 > **⚠️ 请注意AI执行的命令。使用本工具风险自负。**
 
@@ -511,7 +577,7 @@ co-vibe/
 
 ## 📜 Disclaimer / 免責事項 / 免责声明
 
-### 🇯🇵
+### 日本語
 
 > **本プロジェクトは Anthropic・OpenAI・Groq 各社とは一切関係ありません。**
 > 各社が提供・推奨・保証するものではありません。
@@ -521,7 +587,7 @@ co-vibe/
 > 使用によって生じたいかなる損害についても、著者は一切責任を負いません。
 > **すべて自己責任でご利用ください。**
 
-### 🇺🇸
+### English
 
 > **This project is NOT affiliated with Anthropic, OpenAI, or Groq.**
 > Not endorsed or guaranteed by any provider. All trademarks belong to their respective owners.
@@ -530,7 +596,7 @@ co-vibe/
 > The authors are not liable for any damages arising from the use of this software.
 > **Use entirely at your own risk.**
 
-### 🇨🇳
+### 中文
 
 > **本项目与 Anthropic、OpenAI、Groq 无任何关联。**
 > 非各公司提供、推荐或担保。各商标归其各自所有者所有。
