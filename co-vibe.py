@@ -116,7 +116,8 @@ def _signal_cleanup_handler(signum, frame):
     os.kill(os.getpid(), signum)
 
 signal.signal(signal.SIGTERM, _signal_cleanup_handler)
-signal.signal(signal.SIGHUP, _signal_cleanup_handler)
+if hasattr(signal, 'SIGHUP'):
+    signal.signal(signal.SIGHUP, _signal_cleanup_handler)
 
 __version__ = "1.4.0"
 
@@ -1556,16 +1557,19 @@ class MultiProviderClient:
         endpoint = self.PROVIDER_ENDPOINTS[provider]
         for attempt in range(retries):
             try:
+                _ua = f"co-vibe/{__version__} (+https://github.com/ochyai/co-vibe)"
                 if provider == "anthropic":
                     url = f"{endpoint}/v1/models"
                     req = urllib.request.Request(url, method="GET", headers={
                         "x-api-key": self._api_keys[provider],
                         "anthropic-version": "2023-06-01",
+                        "User-Agent": _ua,
                     })
                 else:
                     url = f"{endpoint}/models"
                     req = urllib.request.Request(url, method="GET", headers={
                         "Authorization": f"Bearer {self._api_keys[provider]}",
+                        "User-Agent": _ua,
                     })
                 resp = urllib.request.urlopen(req, timeout=10, context=self._ssl_ctx)
                 resp.read(4096)
@@ -1891,6 +1895,8 @@ class MultiProviderClient:
         Raises RuntimeError on HTTP errors.
         """
         timeout = timeout or self.timeout
+        if "User-Agent" not in headers:
+            headers["User-Agent"] = f"co-vibe/{__version__} (+https://github.com/ochyai/co-vibe)"
         req = urllib.request.Request(url, data=body_bytes, headers=headers, method="POST")
 
         try:
