@@ -1,5 +1,16 @@
 # 🤖⚡ Ｃ Ｏ - Ｖ Ｉ Ｂ Ｅ ⚡🤖
 
+<!-- about -->
+> **このリポは何か**：タスクの複雑さに応じて4つのプロバイダからモデルを選ぶ、ターミナル用のAIコーディングエージェント。
+>
+> **What this is**: This terminal coding agent selects models from four providers according to task complexity.
+>
+> **まず開く / Start here**：`python3 co-vibe.py`
+>
+> **近いリポ / Related**：[vibe-local](https://github.com/ochyai/vibe-local)（Ollamaで動くローカルモデルを使い、オフラインでコーディングを練習できる。 / Supports offline coding practice with local models running through Ollama.）
+<!-- /about -->
+
+
 ```
      ██████╗ ██████╗        ██╗   ██╗██╗██████╗ ███████╗
     ██╔════╝██╔═══██╗       ██║   ██║██║██╔══██╗██╔════╝
